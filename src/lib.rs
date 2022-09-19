@@ -18,6 +18,8 @@ pub struct Room {
 }
 
 impl Room {
+    /// creates new room with a given name
+    /// capacity is the underlying channel capacity and its default is 100
     pub fn new(name: String, capacity: Option<usize>) -> Room {
         let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
 
@@ -30,6 +32,8 @@ impl Room {
         }
     }
 
+    /// join the rooms with a unique user
+    /// if user has joined before it just returns the sender
     pub async fn join(&self, user: String) -> broadcast::Sender<String> {
         let mut inner = self.inner_user.lock().await;
 
@@ -42,6 +46,8 @@ impl Room {
         self.tx.clone()
     }
 
+    /// leave the room with user
+    /// if user has left before it wont do anything
     pub async fn leave(&self, user: String) {
         let mut inner = self.inner_user.lock().await;
 
@@ -52,20 +58,24 @@ impl Room {
         }
     }
 
+    /// check if user is in the room
     pub async fn contains_user(&self, user: &String) -> bool {
         let inner = self.inner_user.lock().await;
 
         inner.contains(user)
     }
 
+    /// checks if room is empty
     pub fn is_empty(&self) -> bool {
         self.user_count.load(Ordering::SeqCst) == 0
     }
 
+    /// get sender without joining room
     pub fn get_sender(&self) -> broadcast::Sender<String> {
         self.tx.clone()
     }
 
+    ///send message to room
     pub fn send(&self, data: String) -> Result<usize, broadcast::error::SendError<String>> {
         self.tx.send(data)
     }
