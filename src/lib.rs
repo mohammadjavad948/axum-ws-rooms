@@ -86,6 +86,8 @@ impl Room {
 mod tests {
     use std::sync::Arc;
 
+    use tokio::select;
+
     use crate::Room;
 
 
@@ -134,6 +136,35 @@ mod tests {
 
         tokio::spawn(async move {
             room.send("hello".into()).unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn can_recieve_from_multiple_room(){
+        let room  = Arc::new(Room::new("my_room1".into(), None));
+        let room1 = Arc::new(Room::new("my_room2".into(), None));
+
+        let roomc = room.clone();
+        let room1c = room.clone();
+
+        tokio::spawn(async move {
+            let mut receiver = room1.join("user1".into()).await.subscribe();
+            let mut receiver1 = room.join("user1".into()).await.subscribe();
+
+            loop {
+                let data = select! {
+                    msg = receiver.recv() => msg,
+                    msg = receiver1.recv() => msg,
+                    else => break, 
+                }.unwrap();
+
+                assert_eq!(data, "hello");
+            }
+        });
+
+        tokio::spawn(async move {
+            roomc.send("hello".into()).unwrap();
+            room1c.send("hello".into()).unwrap();
         });
     }
 }
