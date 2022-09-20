@@ -58,6 +58,7 @@ impl Room {
         }
     }
 
+    /// this method will join the user and return a reciever
     pub async fn recieve(&self, user: String) -> Result<String, broadcast::error::RecvError> {
         self.join(user).await.subscribe().recv().await
     }
