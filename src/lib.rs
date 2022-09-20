@@ -58,6 +58,10 @@ impl Room {
         }
     }
 
+    pub async fn recieve(&self, user: String) -> Result<String, broadcast::error::RecvError> {
+        self.join(user).await.subscribe().recv().await
+    }
+
     /// check if user is in the room
     pub async fn contains_user(&self, user: &String) -> bool {
         let inner = self.inner_user.lock().await;
@@ -81,7 +85,6 @@ impl Room {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -90,24 +93,21 @@ mod tests {
 
     use crate::Room;
 
-
     #[tokio::test]
-    async fn can_create_room(){
+    async fn can_create_room() {
         let room = Room::new("my_room".into(), None);
 
         assert_eq!(room.name, "my_room");
     }
 
     #[tokio::test]
-    async fn can_send_message_to_room(){
+    async fn can_send_message_to_room() {
         let room = Arc::new(Room::new("my_room".into(), None));
 
         let room1 = room.clone();
 
         tokio::spawn(async move {
-            let mut receiver = room1.join("user1".into()).await.subscribe();
-
-            assert_eq!(receiver.recv().await.unwrap(), "hello");
+            assert_eq!(room1.recieve("user1".into()).await.unwrap(), "hello");
         });
 
         tokio::spawn(async move {
@@ -116,22 +116,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn can_send_message_to_multiple_user(){
+    async fn can_send_message_to_multiple_user() {
         let room = Arc::new(Room::new("my_room".into(), None));
 
         let room1 = room.clone();
         let room2 = room.clone();
 
         tokio::spawn(async move {
-            let mut receiver = room1.join("user1".into()).await.subscribe();
-
-            assert_eq!(receiver.recv().await.unwrap(), "hello");
+            assert_eq!(room1.recieve("user1".into()).await.unwrap(), "hello");
         });
 
         tokio::spawn(async move {
-            let mut receiver = room2.join("user2".into()).await.subscribe();
-
-            assert_eq!(receiver.recv().await.unwrap(), "hello");
+            assert_eq!(room2.recieve("user2".into()).await.unwrap(), "hello");
         });
 
         tokio::spawn(async move {
@@ -140,23 +136,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn can_recieve_from_multiple_room(){
-        let room  = Arc::new(Room::new("my_room1".into(), None));
+    async fn can_recieve_from_multiple_room() {
+        let room = Arc::new(Room::new("my_room1".into(), None));
         let room1 = Arc::new(Room::new("my_room2".into(), None));
 
         let roomc = room.clone();
         let room1c = room.clone();
 
         tokio::spawn(async move {
-            let mut receiver = room1.join("user1".into()).await.subscribe();
-            let mut receiver1 = room.join("user1".into()).await.subscribe();
-
             loop {
                 let data = select! {
-                    msg = receiver.recv() => msg,
-                    msg = receiver1.recv() => msg,
-                    else => break, 
-                }.unwrap();
+                    Ok(msg) = room1.recieve("user1".into()) => msg,
+                    Ok(msg) = room.recieve("user1".into()) => msg,
+                    else => break,
+                };
 
                 assert_eq!(data, "hello");
             }
