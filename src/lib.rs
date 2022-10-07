@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
@@ -15,6 +18,10 @@ pub struct Room {
     pub tx: broadcast::Sender<String>,
     pub inner_user: Mutex<Vec<String>>,
     pub user_count: AtomicU32,
+}
+
+pub struct RoomsManager {
+    pub inner: Mutex<HashMap<String, Room>>,
 }
 
 impl Room {
@@ -83,6 +90,62 @@ impl Room {
     ///send message to room
     pub fn send(&self, data: String) -> Result<usize, broadcast::error::SendError<String>> {
         self.tx.send(data)
+    }
+}
+
+impl RoomsManager {
+    pub fn new() -> Self {
+        RoomsManager {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub async fn new_room(&self, name: String, capacity: Option<usize>) {
+        let mut rooms = self.inner.lock().await;
+
+        rooms.insert(name.clone(), Room::new(name, capacity));
+    }
+
+    pub async fn send_message_to_room(
+        &self,
+        name: String,
+        data: String,
+    ) -> Result<usize, &'static str> {
+        let rooms = self.inner.lock().await;
+
+        rooms
+            .get(&name)
+            .ok_or("cant get room")?
+            .send(data)
+            .map_err(|_| "cant send data")
+    }
+
+    pub async fn join_room(
+        &self,
+        name: String,
+        user: String,
+    ) -> Result<broadcast::Sender<String>, &'static str> {
+        let rooms = self.inner.lock().await;
+
+        Ok(rooms.get(&name).ok_or("bruh")?.join(user).await)
+    }
+
+    pub async fn leave_room(
+        &self,
+        name: String,
+        user: String,
+    ) -> Result<(), &'static str> {
+        let rooms = self.inner.lock().await;
+
+        rooms.get(&name).ok_or("bruh")?.leave(user).await;
+
+        Ok(())
+    }
+}
+
+impl Default for RoomsManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
