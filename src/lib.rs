@@ -15,13 +15,13 @@ use uuid::Uuid;
 pub struct Room {
     pub id: String,
     pub name: String,
-    pub tx: broadcast::Sender<String>,
-    pub inner_user: Mutex<Vec<String>>,
-    pub user_count: AtomicU32,
+    tx: broadcast::Sender<String>,
+    inner_user: Mutex<Vec<String>>,
+    user_count: AtomicU32,
 }
 
 pub struct RoomsManager {
-    pub inner: Mutex<HashMap<String, Room>>,
+    inner: Mutex<HashMap<String, Room>>,
 }
 
 impl Room {
@@ -130,11 +130,7 @@ impl RoomsManager {
         Ok(rooms.get(&name).ok_or("bruh")?.join(user).await)
     }
 
-    pub async fn leave_room(
-        &self,
-        name: String,
-        user: String,
-    ) -> Result<(), &'static str> {
+    pub async fn leave_room(&self, name: String, user: String) -> Result<(), &'static str> {
         let rooms = self.inner.lock().await;
 
         rooms.get(&name).ok_or("bruh")?.leave(user).await;
