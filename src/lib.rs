@@ -141,6 +141,12 @@ impl RoomsManager {
 
         Ok(())
     }
+
+    pub async fn is_room_empty(&self, name: String) -> Result<bool, &'static str> {
+        let rooms = self.inner.lock().await;
+
+        Ok(rooms.get(&name).ok_or("can not get room")?.is_empty())
+    }
 }
 
 impl Default for RoomsManager {
