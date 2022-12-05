@@ -40,7 +40,7 @@ impl Room {
     }
 
     /// join the rooms with a unique user
-    /// if user has joined before it just returns the sender
+    /// if user has joined before, it just returns the sender
     pub async fn join(&self, user: String) -> broadcast::Sender<String> {
         let mut inner = self.inner_user.lock().await;
 
@@ -127,13 +127,17 @@ impl RoomsManager {
     ) -> Result<broadcast::Sender<String>, &'static str> {
         let rooms = self.inner.lock().await;
 
-        Ok(rooms.get(&name).ok_or("bruh")?.join(user).await)
+        Ok(rooms.get(&name).ok_or("can not get room")?.join(user).await)
     }
 
     pub async fn leave_room(&self, name: String, user: String) -> Result<(), &'static str> {
         let rooms = self.inner.lock().await;
 
-        rooms.get(&name).ok_or("bruh")?.leave(user).await;
+        rooms
+            .get(&name)
+            .ok_or("can not get room")?
+            .leave(user)
+            .await;
 
         Ok(())
     }
