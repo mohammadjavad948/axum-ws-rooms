@@ -131,6 +131,7 @@ impl RoomsManager {
             .map_err(|_| "cant send data")
     }
 
+    /// joins user to rooms and recieves message
     pub async fn recieve(&self, name: String, user: String) -> Result<String, &'static str> {
         let rooms = self.inner.lock().await;
 
@@ -145,6 +146,7 @@ impl RoomsManager {
             .map_err(|_| "can not recieve")?)
     }
 
+    /// join user to room
     pub async fn join_room(
         &self,
         name: String,
