@@ -131,6 +131,20 @@ impl RoomsManager {
             .map_err(|_| "cant send data")
     }
 
+    pub async fn recieve(&self, name: String, user: String) -> Result<String, &'static str> {
+        let rooms = self.inner.lock().await;
+
+        Ok(rooms
+            .get(&name)
+            .ok_or("can not get room")?
+            .join(user)
+            .await
+            .subscribe()
+            .recv()
+            .await
+            .map_err(|_| "can not recieve")?)
+    }
+
     pub async fn join_room(
         &self,
         name: String,
@@ -258,5 +272,40 @@ mod tests {
         assert_eq!(rooms.rooms_count().await, 2);
         assert_eq!(rooms.is_room_empty("room1".into()).await, Ok(true));
         assert_eq!(rooms.is_room_empty("room2".into()).await, Ok(true));
+    }
+
+    #[tokio::test]
+    async fn can_recieve_from_room_manager() {
+        let rooms = Arc::new(RoomsManager::default());
+
+        rooms.new_room("room1".into(), None).await;
+        rooms.new_room("room2".into(), None).await;
+
+        let room_clone1 = rooms.clone();
+        let room_clone2 = rooms.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let data = select! {
+                    Ok(msg) = room_clone1.recieve("room1".into(), "user1".into()) => msg,
+                    Ok(msg) = room_clone1.recieve("room2".into(), "user1".into()) => msg,
+                    else => break,
+                };
+
+                assert_eq!(data, "hello");
+            }
+        });
+
+        tokio::spawn(async move {
+            room_clone2
+                .send_message_to_room("room1".into(), "hello".into())
+                .await
+                .unwrap();
+
+            room_clone2
+                .send_message_to_room("room2".into(), "hello".into())
+                .await
+                .unwrap();
+        });
     }
 }
