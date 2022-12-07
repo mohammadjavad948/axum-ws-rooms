@@ -158,6 +158,12 @@ impl RoomsManager {
 
         Ok(rooms.get(&name).ok_or("can not get room")?.is_empty())
     }
+
+    pub async fn rooms_count(&self) -> usize {
+        let rooms = self.inner.lock().await;
+
+        rooms.len()
+    }
 }
 
 impl Default for RoomsManager {
@@ -172,7 +178,7 @@ mod tests {
 
     use tokio::select;
 
-    use crate::Room;
+    use crate::{Room, RoomsManager};
 
     #[tokio::test]
     async fn can_create_room() {
@@ -240,5 +246,17 @@ mod tests {
             roomc.send("hello".into()).unwrap();
             room1c.send("hello".into()).unwrap();
         });
+    }
+
+    #[tokio::test]
+    async fn can_create_multiple_room() {
+        let rooms = RoomsManager::default();
+
+        rooms.new_room("room1".into(), None).await;
+        rooms.new_room("room2".into(), None).await;
+
+        assert_eq!(rooms.rooms_count().await, 2);
+        assert_eq!(rooms.is_room_empty("room1".into()).await, Ok(true));
+        assert_eq!(rooms.is_room_empty("room2".into()).await, Ok(true));
     }
 }
