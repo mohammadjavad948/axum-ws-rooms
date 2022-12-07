@@ -91,6 +91,17 @@ impl Room {
     pub fn send(&self, data: String) -> Result<usize, broadcast::error::SendError<String>> {
         self.tx.send(data)
     }
+
+    /// this method locks on user and give it to you
+    /// pls drop it when you dont need it
+    pub async fn users(&self) -> tokio::sync::MutexGuard<Vec<String>> {
+        self.inner_user.lock().await
+    }
+
+    /// get user count of room
+    pub async fn user_count(&self) -> u32 {
+        self.user_count.load(Ordering::SeqCst)
+    }
 }
 
 impl RoomsManager {
