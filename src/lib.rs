@@ -1,8 +1,11 @@
 use std::{
     collections::HashMap,
+    pin::Pin,
     sync::atomic::{AtomicU32, Ordering},
+    task::{Context, Poll},
 };
 
+use std::future::Future;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
@@ -21,7 +24,12 @@ pub struct Room {
 }
 
 pub struct RoomsManager {
+    //                  room name room
     inner: Mutex<HashMap<String, Room>>,
+    //                        user    user joined rooms
+    user_rooms: Mutex<HashMap<String, Vec<String>>>,
+    //                          user    user tx
+    user_recivers: Mutex<HashMap<String, broadcast::Sender<String>>>,
 }
 
 impl Room {
@@ -108,6 +116,8 @@ impl RoomsManager {
     pub fn new() -> Self {
         RoomsManager {
             inner: Mutex::new(HashMap::new()),
+            user_rooms: Mutex::new(HashMap::new()),
+            user_recivers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -144,6 +154,25 @@ impl RoomsManager {
             .recv()
             .await
             .map_err(|_| "can not recieve")?)
+    }
+
+    pub async fn recieve_multi(&self, names: Vec<String>, user: String) -> MultiRoomListen {
+        let rooms = self.inner.lock().await;
+        let mut rooms_rx = vec![];
+
+        for name in names {
+            let room = rooms.get(&name);
+
+            match room {
+                Some(room) => {
+                    let room_rx = room.join(user.clone()).await.subscribe();
+                    rooms_rx.push(room_rx);
+                }
+                None => continue,
+            }
+        }
+
+        MultiRoomListen { rooms_rx }
     }
 
     /// join user to room
@@ -188,6 +217,30 @@ impl Default for RoomsManager {
     }
 }
 
+/// some dark magic here
+pub struct MultiRoomListen {
+    rooms_rx: Vec<broadcast::Receiver<String>>,
+}
+
+impl Future for MultiRoomListen {
+    type Output = Result<String, broadcast::error::RecvError>;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<String, broadcast::error::RecvError>> {
+        for rx in self.rooms_rx.iter_mut() {
+            let rx = rx.recv();
+
+            if let Poll::Ready(val) = Box::pin(rx).as_mut().poll(cx) {
+                return Poll::Ready(val);
+            }
+        }
+
+        Poll::Pending
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -215,6 +268,43 @@ mod tests {
 
         tokio::spawn(async move {
             room.send("hello".into()).unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn test_room_feature() {
+        let rooms = Arc::new(RoomsManager::default());
+
+        rooms.new_room("room1".into(), None).await;
+        rooms.new_room("room2".into(), None).await;
+
+        let room_clone1 = rooms.clone();
+        let room_clone2 = rooms.clone();
+
+        tokio::spawn(async move {
+            let mut datas = vec![];
+
+            while let Ok(data) = room_clone1
+                .recieve_multi(vec!["room1".into(), "room2".into()], "user1".into())
+                .await
+                .await
+            {
+                datas.push(data);
+            }
+
+            assert_eq!(datas.len(), 2);
+        });
+
+        tokio::spawn(async move {
+            room_clone2
+                .send_message_to_room("room1".into(), "hello".into())
+                .await
+                .unwrap();
+
+            room_clone2
+                .send_message_to_room("room2".into(), "hello".into())
+                .await
+                .unwrap();
         });
     }
 
@@ -299,6 +389,50 @@ mod tests {
         });
 
         tokio::spawn(async move {
+            room_clone2
+                .send_message_to_room("room1".into(), "hello".into())
+                .await
+                .unwrap();
+
+            room_clone2
+                .send_message_to_room("room2".into(), "hello".into())
+                .await
+                .unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn can_recieve_multiple_message() {
+        let rooms = Arc::new(RoomsManager::default());
+
+        rooms.new_room("room1".into(), None).await;
+        rooms.new_room("room2".into(), None).await;
+
+        let room_clone1 = rooms.clone();
+        let room_clone2 = rooms.clone();
+
+        tokio::spawn(async move {
+            let mut d = Vec::new();
+
+            loop {
+                let data = select! {
+                    Ok(msg) = room_clone1.recieve("room1".into(), "user1".into()) => msg,
+                    Ok(msg) = room_clone1.recieve("room2".into(), "user1".into()) => msg,
+                    else => break,
+                };
+
+                d.push(data);
+            }
+
+            assert_eq!(d.len(), 3);
+        });
+
+        tokio::spawn(async move {
+            room_clone2
+                .send_message_to_room("room1".into(), "hello".into())
+                .await
+                .unwrap();
+
             room_clone2
                 .send_message_to_room("room1".into(), "hello".into())
                 .await
