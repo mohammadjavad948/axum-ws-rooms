@@ -23,9 +23,16 @@ pub struct Room {
     user_count: AtomicU32,
 }
 
+#[derive(Clone)]
+pub enum Notify {
+    Join,
+    Leave,
+}
+
 pub struct RoomsManager {
     inner: Mutex<HashMap<String, Room>>,
     users_room: Mutex<HashMap<String, Vec<String>>>,
+    user_notify: Mutex<HashMap<String, broadcast::Sender<Notify>>>,
 }
 
 impl Room {
@@ -113,6 +120,7 @@ impl RoomsManager {
         RoomsManager {
             inner: Mutex::new(HashMap::new()),
             users_room: Mutex::new(HashMap::new()),
+            user_notify: Mutex::new(HashMap::new()),
         }
     }
 
@@ -122,6 +130,9 @@ impl RoomsManager {
         rooms.insert(name.clone(), Room::new(name, capacity));
     }
 
+    /// send a message to a room
+    /// it will fail if there are no users in the room or
+    /// if room does not exists
     pub async fn send_message_to_room(
         &self,
         name: String,
@@ -166,6 +177,20 @@ impl RoomsManager {
         MultiRoomListen { rooms_rx }
     }
 
+    /// call this at first of your code to initialize user notifyer
+    /// your app will panic if you try to join or leave a room befor calling this function
+    pub async fn init_user(&self, user: String, capacity: Option<usize>) {
+        let mut notify = self.user_notify.lock().await;
+
+        match notify.entry(user) {
+            std::collections::hash_map::Entry::Occupied(_) => {}
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
+                v.insert(tx);
+            }
+        }
+    }
+
     /// join user to room
     pub async fn join_room(
         &self,
@@ -174,6 +199,7 @@ impl RoomsManager {
     ) -> Result<broadcast::Sender<String>, &'static str> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
+        let notify = self.user_notify.lock().await;
 
         let sender = rooms
             .get(&name)
@@ -181,7 +207,7 @@ impl RoomsManager {
             .join(user.clone())
             .await;
 
-        match users.entry(user) {
+        match users.entry(user.clone()) {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let rooms = o.get_mut();
 
@@ -196,12 +222,18 @@ impl RoomsManager {
             }
         };
 
+        notify
+            .get(&user)
+            .expect("can not get user notifyer. maybe you didnt use init_user?")
+            .send(Notify::Join);
+
         Ok(sender)
     }
 
     pub async fn leave_room(&self, name: String, user: String) -> Result<(), &'static str> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
+        let notify = self.user_notify.lock().await;
 
         rooms
             .get(&name)
@@ -209,7 +241,7 @@ impl RoomsManager {
             .leave(user.clone())
             .await;
 
-        match users.entry(user) {
+        match users.entry(user.clone()) {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let vecotr = o.get_mut();
 
@@ -217,6 +249,11 @@ impl RoomsManager {
             }
             std::collections::hash_map::Entry::Vacant(_) => {}
         }
+
+        notify
+            .get(&user)
+            .expect("can not get user notifyer. maybe you didnt use init_user?")
+            .send(Notify::Leave);
 
         Ok(())
     }
