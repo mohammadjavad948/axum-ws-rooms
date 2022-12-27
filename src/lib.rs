@@ -338,6 +338,7 @@ impl Future for MultiRoomListen {
     }
 }
 
+// fix tests
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
