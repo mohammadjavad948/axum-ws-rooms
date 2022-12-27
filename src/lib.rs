@@ -147,15 +147,13 @@ impl RoomsManager {
             .map_err(|_| "cant send data")
     }
 
-    /// joins user to rooms and recieves message
-    pub async fn recieve(&self, name: String, user: String) -> Result<String, &'static str> {
-        Ok(self
-            .join_room(name, user)
-            .await?
-            .subscribe()
-            .recv()
-            .await
-            .map_err(|_| "can not recieve")?)
+    /// joins user to rooms and return reciever
+    pub async fn room_reciever(
+        &self,
+        name: String,
+        user: String,
+    ) -> Result<broadcast::Receiver<String>, &'static str> {
+        Ok(self.join_room(name, user).await?.subscribe())
     }
 
     pub async fn recieve_multi(&self, names: Vec<String>, user: String) -> MultiRoomListen {
@@ -175,6 +173,45 @@ impl RoomsManager {
         }
 
         MultiRoomListen { rooms_rx }
+    }
+
+    /// returns a MultiRoomListen with all rooms user joined in
+    pub async fn recieve_joined_rooms(
+        &self,
+        user: String,
+    ) -> Result<MultiRoomListen, &'static str> {
+        let rooms = self.inner.lock().await;
+        let user_room = self.users_room.lock().await;
+
+        let mut rooms_rx = vec![];
+
+        let names = user_room.get(&user).ok_or("no rooms for user")?;
+
+        for name in names {
+            let room = rooms.get(name);
+
+            match room {
+                Some(room) => {
+                    let room_rx = room.join(user.clone()).await.subscribe();
+                    rooms_rx.push(room_rx);
+                }
+                None => continue,
+            }
+        }
+
+        Ok(MultiRoomListen { rooms_rx })
+    }
+
+    /// get user notifyer
+    /// panics if you didnt call init_user before
+    pub async fn notify_reciever(&self, user: String) -> broadcast::Receiver<Notify> {
+        let notify = self.user_notify.lock().await;
+
+        notify
+            .get(&user)
+            .expect("can not get user notifyer maybe you didnt call init_user?")
+            .clone()
+            .subscribe()
     }
 
     /// call this at first of your code to initialize user notifyer
