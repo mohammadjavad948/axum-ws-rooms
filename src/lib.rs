@@ -24,12 +24,8 @@ pub struct Room {
 }
 
 pub struct RoomsManager {
-    //                  room name room
     inner: Mutex<HashMap<String, Room>>,
-    //                        user    user joined rooms
-    user_rooms: Mutex<HashMap<String, Vec<String>>>,
-    //                          user    user tx
-    user_recivers: Mutex<HashMap<String, broadcast::Sender<String>>>,
+    users_room: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl Room {
@@ -116,8 +112,7 @@ impl RoomsManager {
     pub fn new() -> Self {
         RoomsManager {
             inner: Mutex::new(HashMap::new()),
-            user_rooms: Mutex::new(HashMap::new()),
-            user_recivers: Mutex::new(HashMap::new()),
+            users_room: Mutex::new(HashMap::new()),
         }
     }
 
@@ -143,13 +138,9 @@ impl RoomsManager {
 
     /// joins user to rooms and recieves message
     pub async fn recieve(&self, name: String, user: String) -> Result<String, &'static str> {
-        let rooms = self.inner.lock().await;
-
-        Ok(rooms
-            .get(&name)
-            .ok_or("can not get room")?
-            .join(user)
-            .await
+        Ok(self
+            .join_room(name, user)
+            .await?
             .subscribe()
             .recv()
             .await
@@ -182,18 +173,50 @@ impl RoomsManager {
         user: String,
     ) -> Result<broadcast::Sender<String>, &'static str> {
         let rooms = self.inner.lock().await;
+        let mut users = self.users_room.lock().await;
 
-        Ok(rooms.get(&name).ok_or("can not get room")?.join(user).await)
+        let sender = rooms
+            .get(&name)
+            .ok_or("can not get room")?
+            .join(user.clone())
+            .await;
+
+        match users.entry(user) {
+            std::collections::hash_map::Entry::Occupied(mut o) => {
+                let rooms = o.get_mut();
+
+                let has = rooms.iter().any(|x| x == &name);
+
+                if !has {
+                    rooms.push(name.clone());
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(vec![name.clone()]);
+            }
+        };
+
+        Ok(sender)
     }
 
     pub async fn leave_room(&self, name: String, user: String) -> Result<(), &'static str> {
         let rooms = self.inner.lock().await;
+        let mut users = self.users_room.lock().await;
 
         rooms
             .get(&name)
             .ok_or("can not get room")?
-            .leave(user)
+            .leave(user.clone())
             .await;
+
+        match users.entry(user) {
+            std::collections::hash_map::Entry::Occupied(mut o) => {
+                let vecotr = o.get_mut();
+
+                vecotr.retain(|x| *x != name);
+            }
+            std::collections::hash_map::Entry::Vacant(_) => {}
+        }
 
         Ok(())
     }
