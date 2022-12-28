@@ -1,11 +1,8 @@
 use std::{
     collections::HashMap,
-    pin::Pin,
     sync::atomic::{AtomicU32, Ordering},
-    task::{Context, Poll},
 };
 
-use std::future::Future;
 use tokio::{
     sync::{broadcast, Mutex},
     task::JoinHandle,
@@ -325,6 +322,20 @@ impl RoomsManager {
         let rooms = self.inner.lock().await;
 
         rooms.len()
+    }
+
+    pub async fn get_user_receiver(
+        &self,
+        name: String,
+    ) -> Result<broadcast::Receiver<String>, &'static str> {
+        let rx = self.user_reciever.lock().await;
+
+        let rx = rx
+            .get(&name)
+            .ok_or("can not get user reciever maybe you didnt call user_init?")?
+            .subscribe();
+
+        Ok(rx)
     }
 }
 

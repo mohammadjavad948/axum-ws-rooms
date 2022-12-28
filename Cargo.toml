@@ -1,6 +1,6 @@
 [package]
 name = "axum-ws-rooms"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "Room Manager for axum websocket"
@@ -13,5 +13,4 @@ keywords = ["axum", "axum-ws"]
 tokio = {version = "1", features = ["rt", "sync", "macros"]}
 serde_json = "1.0"
 serde= { version = "1.0", features = ["derive"] }
-futures = "0.3"
 uuid = { version = "1.1.2", features = ["v4"] }
