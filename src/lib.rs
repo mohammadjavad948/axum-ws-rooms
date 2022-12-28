@@ -259,7 +259,7 @@ impl RoomsManager {
             }
         };
 
-        notify
+        let _ = notify
             .get(&user)
             .expect("can not get user notifyer. maybe you didnt use init_user?")
             .send(Notify::Join);
@@ -287,7 +287,7 @@ impl RoomsManager {
             std::collections::hash_map::Entry::Vacant(_) => {}
         }
 
-        notify
+        let _ = notify
             .get(&user)
             .expect("can not get user notifyer. maybe you didnt use init_user?")
             .send(Notify::Leave);
