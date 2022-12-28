@@ -11,7 +11,8 @@ for a single room: it creates a channel for room and sends data through channel.
 
 ## Example
 
-```rust
+```rs
+
 struct State {
   rooms: RoomsManager,
 }
