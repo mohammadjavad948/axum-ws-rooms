@@ -228,6 +228,32 @@ impl RoomsManager {
         }
     }
 
+    /// call this at end of your code to remove user from all rooms
+    pub async fn end_user(&self, user: String) {
+        let mut notify = self.user_notify.lock().await;
+        let mut user_room = self.users_room.lock().await;
+
+        match notify.entry(user.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => {
+                o.remove();
+            }
+            std::collections::hash_map::Entry::Vacant(_) => {}
+        }
+
+        match user_room.entry(user.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => {
+                let user_rooms = o.get();
+
+                for room in user_rooms {
+                    let _ = self.leave_room(room.clone(), user.clone()).await;
+                }
+
+                o.remove();
+            }
+            std::collections::hash_map::Entry::Vacant(_) => {}
+        }
+    }
+
     /// join user to room
     pub async fn join_room(
         &self,
