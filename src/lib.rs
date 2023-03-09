@@ -7,7 +7,6 @@ use tokio::{
     sync::{broadcast, Mutex},
     task::JoinHandle,
 };
-use uuid::Uuid;
 
 /// each room has a name and id and it contains `broadcast::sender<String>` which can be accessed
 /// by `get_sender` method and you can send message to a roome by calling `send` on room.
@@ -16,24 +15,21 @@ use uuid::Uuid;
 /// which you can subscribe to it and listen for incoming messages.
 /// remember to leave the room after the user disconnects.
 pub struct Room {
-    pub id: String,
     pub name: String,
     tx: broadcast::Sender<String>,
     inner_user: Mutex<Vec<String>>,
     user_count: AtomicU32,
 }
 
-#[derive(Clone)]
-pub enum Notify {
-    Join,
-    Leave,
-}
-
 pub struct RoomsManager {
     inner: Mutex<HashMap<String, Room>>,
-    users_room: Mutex<HashMap<String, Vec<(JoinHandle<()>, String)>>>,
-    user_notify: Mutex<HashMap<String, broadcast::Sender<Notify>>>,
+    users_room: Mutex<HashMap<String, Vec<UserTask>>>,
     user_reciever: Mutex<HashMap<String, broadcast::Sender<String>>>,
+}
+
+struct UserTask {
+    room_name: String,
+    task: JoinHandle<()>,
 }
 
 impl Room {
@@ -43,7 +39,6 @@ impl Room {
         let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
 
         Room {
-            id: Uuid::new_v4().to_string(),
             name,
             tx,
             inner_user: Mutex::new(vec![]),
@@ -121,7 +116,6 @@ impl RoomsManager {
         RoomsManager {
             inner: Mutex::new(HashMap::new()),
             users_room: Mutex::new(HashMap::new()),
-            user_notify: Mutex::new(HashMap::new()),
             user_reciever: Mutex::new(HashMap::new()),
         }
     }
@@ -149,31 +143,10 @@ impl RoomsManager {
             .map_err(|_| "cant send data")
     }
 
-    /// get user notifyer
-    /// panics if you didnt call init_user before
-    pub async fn notify_reciever(&self, user: String) -> broadcast::Receiver<Notify> {
-        let notify = self.user_notify.lock().await;
-
-        notify
-            .get(&user)
-            .expect("can not get user notifyer maybe you didnt call init_user?")
-            .clone()
-            .subscribe()
-    }
-
     /// call this at first of your code to initialize user notifyer
     /// your app will panic if you try to join or leave a room befor calling this function
     pub async fn init_user(&self, user: String, capacity: Option<usize>) {
-        let mut notify = self.user_notify.lock().await;
         let mut user_reciever = self.user_reciever.lock().await;
-
-        match notify.entry(user.clone()) {
-            std::collections::hash_map::Entry::Occupied(_) => {}
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
-                v.insert(tx);
-            }
-        }
 
         match user_reciever.entry(user) {
             std::collections::hash_map::Entry::Occupied(_) => {}
@@ -186,7 +159,6 @@ impl RoomsManager {
 
     /// call this at end of your code to remove user from all rooms
     pub async fn end_user(&self, user: String) {
-        let mut notify = self.user_notify.lock().await;
         let mut user_room = self.users_room.lock().await;
         let mut user_reciever = self.user_reciever.lock().await;
         let rooms = self.inner.lock().await;
@@ -195,23 +167,16 @@ impl RoomsManager {
             std::collections::hash_map::Entry::Occupied(o) => {
                 let user_rooms = o.get();
 
-                for (task, room) in user_rooms {
-                    let room = rooms.get(room);
+                for task in user_rooms {
+                    let room = rooms.get(&task.room_name);
 
                     if let Some(room) = room {
                         room.leave(user.clone()).await;
                     }
 
-                    task.abort();
+                    task.task.abort();
                 }
 
-                o.remove();
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {}
-        }
-
-        match notify.entry(user.clone()) {
-            std::collections::hash_map::Entry::Occupied(o) => {
                 o.remove();
             }
             std::collections::hash_map::Entry::Vacant(_) => {}
@@ -233,7 +198,6 @@ impl RoomsManager {
     ) -> Result<broadcast::Sender<String>, &'static str> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
-        let notify = self.user_notify.lock().await;
         let user_reciever = self.user_reciever.lock().await;
 
         let sender = rooms
@@ -259,29 +223,55 @@ impl RoomsManager {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let rooms = o.get_mut();
 
-                let has = rooms.iter().any(|x| x.1 == name);
+                let has = rooms.iter().any(|x| x.room_name == name);
 
                 if !has {
-                    rooms.push((task, name.clone()));
+                    rooms.push(UserTask {
+                        room_name: name,
+                        task,
+                    });
                 }
             }
             std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(vec![(task, name.clone())]);
+                v.insert(vec![UserTask {
+                    room_name: name,
+                    task,
+                }]);
             }
         };
 
-        let _ = notify
-            .get(&user)
-            .expect("can not get user notifyer. maybe you didnt use init_user?")
-            .send(Notify::Join);
-
         Ok(sender)
+    }
+
+    pub async fn remove_room(&self, room: String) {
+        let mut rooms = self.inner.lock().await;
+        let mut users = self.users_room.lock().await;
+
+        match rooms.entry(room.clone()) {
+            std::collections::hash_map::Entry::Vacant(_) => {}
+            std::collections::hash_map::Entry::Occupied(el) => {
+                for user in el.get().users().await.iter() {
+                    if let std::collections::hash_map::Entry::Occupied(mut user_task) =
+                        users.entry(user.into())
+                    {
+                        let vecotr = user_task.get_mut();
+
+                        vecotr.retain(|task| {
+                            if task.room_name == room {
+                                task.task.abort();
+                            }
+
+                            task.room_name != room
+                        });
+                    }
+                }
+            }
+        }
     }
 
     pub async fn leave_room(&self, name: String, user: String) -> Result<(), &'static str> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
-        let notify = self.user_notify.lock().await;
 
         rooms
             .get(&name)
@@ -293,21 +283,16 @@ impl RoomsManager {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let vecotr = o.get_mut();
 
-                vecotr.retain(|(task, room_name)| {
-                    if room_name == &name {
-                        task.abort();
+                vecotr.retain(|task| {
+                    if task.room_name == name {
+                        task.task.abort();
                     }
 
-                    room_name != &name
+                    task.room_name != name
                 });
             }
             std::collections::hash_map::Entry::Vacant(_) => {}
         }
-
-        let _ = notify
-            .get(&user)
-            .expect("can not get user notifyer. maybe you didnt use init_user?")
-            .send(Notify::Leave);
 
         Ok(())
     }
