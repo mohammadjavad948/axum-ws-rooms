@@ -159,9 +159,9 @@ impl RoomsManager {
 
     /// call this at end of your code to remove user from all rooms
     pub async fn end_user(&self, user: String) {
+        let rooms = self.inner.lock().await;
         let mut user_room = self.users_room.lock().await;
         let mut user_reciever = self.user_reciever.lock().await;
-        let rooms = self.inner.lock().await;
 
         match user_room.entry(user.clone()) {
             std::collections::hash_map::Entry::Occupied(o) => {
@@ -265,6 +265,8 @@ impl RoomsManager {
                         });
                     }
                 }
+
+                el.remove();
             }
         }
     }
