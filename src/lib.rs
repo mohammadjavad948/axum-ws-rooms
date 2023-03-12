@@ -126,6 +126,30 @@ impl RoomsManager {
         rooms.insert(name.clone(), Room::new(name, capacity));
     }
 
+    pub async fn room_exists(&self, name: &str) -> bool {
+        let rooms = self.inner.lock().await;
+
+        match rooms.get(name) {
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    pub async fn join_or_create(
+        &self,
+        user: String,
+        room: String,
+    ) -> Result<broadcast::Sender<String>, &str> {
+        match self.room_exists(&room).await {
+            true => self.join_room(room, user).await,
+            false => {
+                self.new_room(room.clone(), None).await;
+
+                self.join_room(room, user).await
+            }
+        }
+    }
+
     /// send a message to a room
     /// it will fail if there are no users in the room or
     /// if room does not exists
