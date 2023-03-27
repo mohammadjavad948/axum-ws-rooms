@@ -21,10 +21,29 @@ pub struct Room {
     user_count: AtomicU32,
 }
 
+/// this struct is used for managing multiple rooms at once
+/// ## how it works
+/// everything is managed by a mutex
+/// there is a hashmap of rooms
+/// a hashmap of user reciever
+/// and a hashmap of user task
+/// when a user joins a room a task will be created and all of that rooms
+/// message will be forwarded to user reciever
+/// and then user can listen to its own user reciever and recieve message from all joind rooms
 pub struct RoomsManager {
     inner: Mutex<HashMap<String, Room>>,
     users_room: Mutex<HashMap<String, Vec<UserTask>>>,
     user_reciever: Mutex<HashMap<String, broadcast::Sender<String>>>,
+}
+
+#[derive(Debug)]
+pub enum RoomError {
+    /// room does not exists
+    RoomNotFound,
+    /// can not send message to room
+    MessageSendFail,
+    /// you have not called init_user
+    NotInitiated,
 }
 
 struct UserTask {
@@ -139,7 +158,7 @@ impl RoomsManager {
         &self,
         user: String,
         room: String,
-    ) -> Result<broadcast::Sender<String>, &str> {
+    ) -> Result<broadcast::Sender<String>, RoomError> {
         match self.room_exists(&room).await {
             true => self.join_room(room, user).await,
             false => {
@@ -157,18 +176,17 @@ impl RoomsManager {
         &self,
         name: String,
         data: String,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, RoomError> {
         let rooms = self.inner.lock().await;
 
         rooms
             .get(&name)
-            .ok_or("cant get room")?
+            .ok_or(RoomError::RoomNotFound)?
             .send(data)
-            .map_err(|_| "cant send data")
+            .map_err(|_| RoomError::MessageSendFail)
     }
 
     /// call this at first of your code to initialize user notifyer
-    /// your app will panic if you try to join or leave a room befor calling this function
     pub async fn init_user(&self, user: String, capacity: Option<usize>) {
         let mut user_reciever = self.user_reciever.lock().await;
 
@@ -219,20 +237,20 @@ impl RoomsManager {
         &self,
         name: String,
         user: String,
-    ) -> Result<broadcast::Sender<String>, &'static str> {
+    ) -> Result<broadcast::Sender<String>, RoomError> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
         let user_reciever = self.user_reciever.lock().await;
 
         let sender = rooms
             .get(&name)
-            .ok_or("can not get room")?
+            .ok_or(RoomError::RoomNotFound)?
             .join(user.clone())
             .await;
 
         let user_reciever = user_reciever
             .get(&user)
-            .expect("can not get user reciever. maybe you didnt use init_user?")
+            .ok_or(RoomError::NotInitiated)?
             .clone();
 
         let mut task_recv = sender.subscribe();
@@ -295,13 +313,13 @@ impl RoomsManager {
         }
     }
 
-    pub async fn leave_room(&self, name: String, user: String) -> Result<(), &'static str> {
+    pub async fn leave_room(&self, name: String, user: String) -> Result<(), RoomError> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
 
         rooms
             .get(&name)
-            .ok_or("can not get room")?
+            .ok_or(RoomError::RoomNotFound)?
             .leave(user.clone())
             .await;
 
@@ -323,10 +341,10 @@ impl RoomsManager {
         Ok(())
     }
 
-    pub async fn is_room_empty(&self, name: String) -> Result<bool, &'static str> {
+    pub async fn is_room_empty(&self, name: String) -> Result<bool, RoomError> {
         let rooms = self.inner.lock().await;
 
-        Ok(rooms.get(&name).ok_or("can not get room")?.is_empty())
+        Ok(rooms.get(&name).ok_or(RoomError::RoomNotFound)?.is_empty())
     }
 
     pub async fn rooms_count(&self) -> usize {
@@ -338,13 +356,10 @@ impl RoomsManager {
     pub async fn get_user_receiver(
         &self,
         name: String,
-    ) -> Result<broadcast::Receiver<String>, &'static str> {
+    ) -> Result<broadcast::Receiver<String>, RoomError> {
         let rx = self.user_reciever.lock().await;
 
-        let rx = rx
-            .get(&name)
-            .ok_or("can not get user reciever maybe you didnt call user_init?")?
-            .subscribe();
+        let rx = rx.get(&name).ok_or(RoomError::NotInitiated)?.subscribe();
 
         Ok(rx)
     }
