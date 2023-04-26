@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    error::Error,
+    fmt,
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -44,6 +46,24 @@ pub enum RoomError {
     MessageSendFail,
     /// you have not called init_user
     NotInitiated,
+}
+
+impl Error for RoomError {}
+
+impl fmt::Display for RoomError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RoomError::RoomNotFound => {
+                write!(f, "target room not found")
+            }
+            RoomError::NotInitiated => {
+                write!(f, "user is not initiated")
+            }
+            RoomError::MessageSendFail => {
+                write!(f, "failed to send message to the room")
+            }
+        }
+    }
 }
 
 struct UserTask {
