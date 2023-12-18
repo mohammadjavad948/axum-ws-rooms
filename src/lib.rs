@@ -16,9 +16,9 @@ use tokio::{
 /// if you want to join a room you can call `join` method and recieve a `broadcast::Sender<String>`
 /// which you can subscribe to it and listen for incoming messages.
 /// remember to leave the room after the user disconnects.
-pub struct Room {
+pub struct Room<T> {
     pub name: String,
-    tx: broadcast::Sender<String>,
+    tx: broadcast::Sender<T>,
     inner_user: Mutex<Vec<String>>,
     user_count: AtomicU32,
 }
@@ -32,10 +32,10 @@ pub struct Room {
 /// when a user joins a room a task will be created and all of that rooms
 /// message will be forwarded to user reciever
 /// and then user can listen to its own user reciever and recieve message from all joind rooms
-pub struct RoomsManager {
-    inner: Mutex<HashMap<String, Room>>,
+pub struct RoomsManager<T> {
+    inner: Mutex<HashMap<String, Room<T>>>,
     users_room: Mutex<HashMap<String, Vec<UserTask>>>,
-    user_reciever: Mutex<HashMap<String, broadcast::Sender<String>>>,
+    user_reciever: Mutex<HashMap<String, broadcast::Sender<T>>>,
 }
 
 #[derive(Debug)]
@@ -71,10 +71,13 @@ struct UserTask {
     task: JoinHandle<()>,
 }
 
-impl Room {
+impl<T> Room<T>
+where
+    T: Clone + Send + 'static,
+{
     /// creates new room with a given name
     /// capacity is the underlying channel capacity and its default is 100
-    pub fn new(name: String, capacity: Option<usize>) -> Room {
+    pub fn new(name: String, capacity: Option<usize>) -> Room<T> {
         let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
 
         Room {
@@ -87,7 +90,7 @@ impl Room {
 
     /// join the rooms with a unique user
     /// if user has joined before, it just returns the sender
-    pub async fn join(&self, user: String) -> broadcast::Sender<String> {
+    pub async fn join(&self, user: String) -> broadcast::Sender<T> {
         let mut inner = self.inner_user.lock().await;
 
         if !inner.contains(&user) {
@@ -112,7 +115,7 @@ impl Room {
     }
 
     /// this method will join the user and return a reciever
-    pub async fn recieve(&self, user: String) -> broadcast::Receiver<String> {
+    pub async fn recieve(&self, user: String) -> broadcast::Receiver<T> {
         self.join(user).await.subscribe()
     }
 
@@ -129,12 +132,12 @@ impl Room {
     }
 
     /// get sender without joining room
-    pub fn get_sender(&self) -> broadcast::Sender<String> {
+    pub fn get_sender(&self) -> broadcast::Sender<T> {
         self.tx.clone()
     }
 
     ///send message to room
-    pub fn send(&self, data: String) -> Result<usize, broadcast::error::SendError<String>> {
+    pub fn send(&self, data: T) -> Result<usize, broadcast::error::SendError<T>> {
         self.tx.send(data)
     }
 
@@ -150,7 +153,10 @@ impl Room {
     }
 }
 
-impl RoomsManager {
+impl<T> RoomsManager<T>
+where
+    T: Clone + Send + 'static,
+{
     pub fn new() -> Self {
         RoomsManager {
             inner: Mutex::new(HashMap::new()),
@@ -178,7 +184,7 @@ impl RoomsManager {
         &self,
         user: String,
         room: String,
-    ) -> Result<broadcast::Sender<String>, RoomError> {
+    ) -> Result<broadcast::Sender<T>, RoomError> {
         match self.room_exists(&room).await {
             true => self.join_room(room, user).await,
             false => {
@@ -192,11 +198,7 @@ impl RoomsManager {
     /// send a message to a room
     /// it will fail if there are no users in the room or
     /// if room does not exists
-    pub async fn send_message_to_room(
-        &self,
-        name: String,
-        data: String,
-    ) -> Result<usize, RoomError> {
+    pub async fn send_message_to_room(&self, name: String, data: T) -> Result<usize, RoomError> {
         let rooms = self.inner.lock().await;
 
         rooms
@@ -257,7 +259,7 @@ impl RoomsManager {
         &self,
         name: String,
         user: String,
-    ) -> Result<broadcast::Sender<String>, RoomError> {
+    ) -> Result<broadcast::Sender<T>, RoomError> {
         let rooms = self.inner.lock().await;
         let mut users = self.users_room.lock().await;
         let user_reciever = self.user_reciever.lock().await;
@@ -376,7 +378,7 @@ impl RoomsManager {
     pub async fn get_user_receiver(
         &self,
         name: String,
-    ) -> Result<broadcast::Receiver<String>, RoomError> {
+    ) -> Result<broadcast::Receiver<T>, RoomError> {
         let rx = self.user_reciever.lock().await;
 
         let rx = rx.get(&name).ok_or(RoomError::NotInitiated)?.subscribe();
@@ -385,7 +387,10 @@ impl RoomsManager {
     }
 }
 
-impl Default for RoomsManager {
+impl<T> Default for RoomsManager<T>
+where
+    T: Clone + Send + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
