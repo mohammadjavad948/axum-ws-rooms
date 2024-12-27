@@ -216,10 +216,7 @@ where
     pub async fn room_exists(&self, name: &K) -> bool {
         let rooms = self.inner.read().await;
 
-        match rooms.get(name) {
-            Some(_) => true,
-            None => false,
-        }
+        rooms.get(name).is_some()
     }
 
     pub async fn join_or_create(&self, user: U, room: K) -> Result<(), RoomError> {
@@ -358,7 +355,7 @@ where
     }
 }
 
-impl<'a, K, U, T> std::ops::Deref for UserReceiverGuard<'a, K, U, T>
+impl<K, U, T> std::ops::Deref for UserReceiverGuard<'_, K, U, T>
 where
     T: Clone + Send + 'static,
     K: Eq + std::hash::Hash + Clone,
@@ -371,7 +368,7 @@ where
     }
 }
 
-impl<'a, K, U, T> std::ops::DerefMut for UserReceiverGuard<'a, K, U, T>
+impl<K, U, T> std::ops::DerefMut for UserReceiverGuard<'_, K, U, T>
 where
     T: Clone + Send + 'static,
     K: Eq + std::hash::Hash + Clone,
@@ -382,7 +379,7 @@ where
     }
 }
 
-impl<'a, K, U, T> Drop for UserReceiverGuard<'a, K, U, T>
+impl<K, U, T> Drop for UserReceiverGuard<'_, K, U, T>
 where
     T: Clone + Send + 'static,
     K: Eq + std::hash::Hash + Clone,
