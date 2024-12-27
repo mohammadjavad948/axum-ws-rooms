@@ -6,7 +6,7 @@ use std::{
 };
 
 use tokio::{
-    sync::{broadcast, Mutex},
+    sync::{broadcast, RwLock},
     task::JoinHandle,
 };
 
@@ -16,11 +16,15 @@ use tokio::{
 /// if you want to join a room you can call `join` method and recieve a `broadcast::Sender<String>`
 /// which you can subscribe to it and listen for incoming messages.
 /// remember to leave the room after the user disconnects.
-pub struct Room<T> {
-    pub name: String,
+pub struct Room<K, U, T> {
+    pub name: K,
     tx: broadcast::Sender<T>,
-    inner_user: Mutex<Vec<String>>,
+    inner_user: RwLock<HashMap<U, UserTask>>,
     user_count: AtomicU32,
+}
+
+struct UserTask {
+    task: JoinHandle<()>,
 }
 
 /// this struct is used for managing multiple rooms at once
@@ -32,10 +36,9 @@ pub struct Room<T> {
 /// when a user joins a room a task will be created and all of that rooms
 /// message will be forwarded to user reciever
 /// and then user can listen to its own user reciever and recieve message from all joind rooms
-pub struct RoomsManager<T> {
-    inner: Mutex<HashMap<String, Room<T>>>,
-    users_room: Mutex<HashMap<String, Vec<UserTask>>>,
-    user_reciever: Mutex<HashMap<String, broadcast::Sender<T>>>,
+pub struct RoomsManager<K, U, T> {
+    inner: RwLock<HashMap<K, Room<K, U, T>>>,
+    user_reciever: RwLock<HashMap<U, broadcast::Sender<T>>>,
 }
 
 #[derive(Debug)]
@@ -66,64 +69,108 @@ impl fmt::Display for RoomError {
     }
 }
 
-struct UserTask {
-    room_name: String,
-    task: JoinHandle<()>,
-}
-
-impl<T> Room<T>
+pub struct UserReceiverGuard<'a, K, U, T>
 where
     T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash + Clone,
+    U: Eq + std::hash::Hash + Clone,
+{
+    receiver: broadcast::Receiver<T>,
+    user: U,
+    manager: &'a RoomsManager<K, U, T>,
+}
+
+impl<K, U, T> Room<K, U, T>
+where
+    T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash,
+    U: Eq + std::hash::Hash,
 {
     /// creates new room with a given name
     /// capacity is the underlying channel capacity and its default is 100
-    pub fn new(name: String, capacity: Option<usize>) -> Room<T> {
+    pub fn new(name: K, capacity: Option<usize>) -> Room<K, U, T> {
         let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
 
         Room {
             name,
             tx,
-            inner_user: Mutex::new(vec![]),
+            inner_user: RwLock::new(HashMap::new()),
             user_count: AtomicU32::new(0),
         }
     }
 
     /// join the rooms with a unique user
-    /// if user has joined before, it just returns the sender
-    pub async fn join(&self, user: String) -> broadcast::Sender<T> {
-        let mut inner = self.inner_user.lock().await;
+    /// if user has joined before, it does nothing
+    pub async fn join(&self, user: U, user_sender: broadcast::Sender<T>) {
+        let mut inner = self.inner_user.write().await;
 
-        if !inner.contains(&user) {
-            inner.push(user);
+        match inner.entry(user) {
+            std::collections::hash_map::Entry::Occupied(_) => {}
+            std::collections::hash_map::Entry::Vacant(data) => {
+                let mut room_rec = self.get_sender().subscribe();
 
-            self.user_count.fetch_add(1, Ordering::SeqCst);
+                let task = tokio::spawn(async move {
+                    while let Ok(data) = room_rec.recv().await {
+                        let _ = user_sender.send(data);
+                    }
+                });
+
+                data.insert(UserTask { task });
+
+                self.user_count.fetch_add(1, Ordering::SeqCst);
+            }
         }
-
-        self.tx.clone()
     }
 
     /// leave the room with user
     /// if user has left before it wont do anything
-    pub async fn leave(&self, user: String) {
-        let mut inner = self.inner_user.lock().await;
+    async fn leave(&self, user: U) {
+        let mut inner = self.inner_user.write().await;
 
-        if let Some(pos) = inner.iter().position(|x| *x == user) {
-            inner.swap_remove(pos);
+        match inner.entry(user) {
+            std::collections::hash_map::Entry::Vacant(_) => {}
+            std::collections::hash_map::Entry::Occupied(data) => {
+                let data = data.remove();
 
-            self.user_count.fetch_sub(1, Ordering::SeqCst);
+                data.task.abort();
+
+                self.user_count.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     }
 
-    /// this method will join the user and return a reciever
-    pub async fn recieve(&self, user: String) -> broadcast::Receiver<T> {
-        self.join(user).await.subscribe()
+    pub fn blocking_leave(&self, user: U) {
+        let mut inner = self.inner_user.blocking_write();
+
+        match inner.entry(user) {
+            std::collections::hash_map::Entry::Vacant(_) => {}
+            std::collections::hash_map::Entry::Occupied(data) => {
+                let data = data.remove();
+
+                data.task.abort();
+
+                self.user_count.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    pub async fn clear_tasks(&self) {
+        let mut inner = self.inner_user.write().await;
+
+        inner.values().into_iter().for_each(|value| {
+            value.task.abort();
+        });
+
+        inner.clear();
+
+        self.user_count.store(0, Ordering::SeqCst);
     }
 
     /// check if user is in the room
-    pub async fn contains_user(&self, user: &String) -> bool {
-        let inner = self.inner_user.lock().await;
+    pub async fn contains_user(&self, user: &U) -> bool {
+        let inner = self.inner_user.read().await;
 
-        inner.contains(user)
+        inner.contains_key(user)
     }
 
     /// checks if room is empty
@@ -141,38 +188,33 @@ where
         self.tx.send(data)
     }
 
-    /// this method locks on user and give it to you
-    /// pls drop it when you dont need it
-    pub async fn users(&self) -> tokio::sync::MutexGuard<Vec<String>> {
-        self.inner_user.lock().await
-    }
-
     /// get user count of room
     pub async fn user_count(&self) -> u32 {
         self.user_count.load(Ordering::SeqCst)
     }
 }
 
-impl<T> RoomsManager<T>
+impl<K, U, T> RoomsManager<K, U, T>
 where
     T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash + Clone,
+    U: Eq + std::hash::Hash + Clone,
 {
     pub fn new() -> Self {
         RoomsManager {
-            inner: Mutex::new(HashMap::new()),
-            users_room: Mutex::new(HashMap::new()),
-            user_reciever: Mutex::new(HashMap::new()),
+            inner: RwLock::new(HashMap::new()),
+            user_reciever: RwLock::new(HashMap::new()),
         }
     }
 
-    pub async fn new_room(&self, name: String, capacity: Option<usize>) {
-        let mut rooms = self.inner.lock().await;
+    pub async fn new_room(&self, name: K, capacity: Option<usize>) {
+        let mut rooms = self.inner.write().await;
 
         rooms.insert(name.clone(), Room::new(name, capacity));
     }
 
-    pub async fn room_exists(&self, name: &str) -> bool {
-        let rooms = self.inner.lock().await;
+    pub async fn room_exists(&self, name: &K) -> bool {
+        let rooms = self.inner.read().await;
 
         match rooms.get(name) {
             Some(_) => true,
@@ -180,11 +222,7 @@ where
         }
     }
 
-    pub async fn join_or_create(
-        &self,
-        user: String,
-        room: String,
-    ) -> Result<broadcast::Sender<T>, RoomError> {
+    pub async fn join_or_create(&self, user: U, room: K) -> Result<(), RoomError> {
         match self.room_exists(&room).await {
             true => self.join_room(room, user).await,
             false => {
@@ -198,52 +236,50 @@ where
     /// send a message to a room
     /// it will fail if there are no users in the room or
     /// if room does not exists
-    pub async fn send_message_to_room(&self, name: String, data: T) -> Result<usize, RoomError> {
-        let rooms = self.inner.lock().await;
+    pub async fn send_message_to_room(&self, name: &K, data: T) -> Result<usize, RoomError> {
+        let rooms = self.inner.read().await;
 
         rooms
-            .get(&name)
+            .get(name)
             .ok_or(RoomError::RoomNotFound)?
             .send(data)
             .map_err(|_| RoomError::MessageSendFail)
     }
 
-    /// call this at first of your code to initialize user notifyer
-    pub async fn init_user(&self, user: String, capacity: Option<usize>) {
-        let mut user_reciever = self.user_reciever.lock().await;
+    /// call this at first of your code to initialize user notifier
+    pub async fn init_user(
+        &self,
+        user: U,
+        capacity: Option<usize>,
+    ) -> UserReceiverGuard<'_, K, U, T> {
+        let mut user_reciever = self.user_reciever.write().await;
 
-        match user_reciever.entry(user) {
-            std::collections::hash_map::Entry::Occupied(_) => {}
+        match user_reciever.entry(user.clone()) {
+            std::collections::hash_map::Entry::Occupied(channel) => UserReceiverGuard {
+                user,
+                receiver: channel.get().subscribe(),
+                manager: self,
+            },
             std::collections::hash_map::Entry::Vacant(v) => {
-                let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
+                let (tx, rx) = broadcast::channel(capacity.unwrap_or(100));
                 v.insert(tx);
+
+                UserReceiverGuard {
+                    user,
+                    receiver: rx,
+                    manager: self,
+                }
             }
         }
     }
 
     /// call this at end of your code to remove user from all rooms
-    pub async fn end_user(&self, user: String) {
-        let rooms = self.inner.lock().await;
-        let mut user_room = self.users_room.lock().await;
-        let mut user_reciever = self.user_reciever.lock().await;
+    pub fn end_user(&self, user: U) {
+        let rooms = self.inner.blocking_write();
+        let mut user_reciever = self.user_reciever.blocking_write();
 
-        match user_room.entry(user.clone()) {
-            std::collections::hash_map::Entry::Occupied(o) => {
-                let user_rooms = o.get();
-
-                for task in user_rooms {
-                    let room = rooms.get(&task.room_name);
-
-                    if let Some(room) = room {
-                        room.leave(user.clone()).await;
-                    }
-
-                    task.task.abort();
-                }
-
-                o.remove();
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {}
+        for (_key, room) in rooms.iter() {
+            room.blocking_leave(user.clone());
         }
 
         match user_reciever.entry(user.clone()) {
@@ -255,89 +291,39 @@ where
     }
 
     /// join user to room
-    pub async fn join_room(
-        &self,
-        name: String,
-        user: String,
-    ) -> Result<broadcast::Sender<T>, RoomError> {
-        let rooms = self.inner.lock().await;
-        let mut users = self.users_room.lock().await;
-        let user_reciever = self.user_reciever.lock().await;
-
-        let sender = rooms
-            .get(&name)
-            .ok_or(RoomError::RoomNotFound)?
-            .join(user.clone())
-            .await;
+    pub async fn join_room(&self, name: K, user: U) -> Result<(), RoomError> {
+        let rooms = self.inner.read().await;
+        let user_reciever = self.user_reciever.read().await;
 
         let user_reciever = user_reciever
             .get(&user)
             .ok_or(RoomError::NotInitiated)?
             .clone();
 
-        let mut task_recv = sender.subscribe();
+        rooms
+            .get(&name)
+            .ok_or(RoomError::RoomNotFound)?
+            .join(user.clone(), user_reciever)
+            .await;
 
-        let task = tokio::spawn(async move {
-            while let Ok(data) = task_recv.recv().await {
-                let _ = user_reciever.send(data);
-            }
-        });
-
-        match users.entry(user.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut o) => {
-                let rooms = o.get_mut();
-
-                let has = rooms.iter().any(|x| x.room_name == name);
-
-                if !has {
-                    rooms.push(UserTask {
-                        room_name: name,
-                        task,
-                    });
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(vec![UserTask {
-                    room_name: name,
-                    task,
-                }]);
-            }
-        };
-
-        Ok(sender)
+        Ok(())
     }
 
-    pub async fn remove_room(&self, room: String) {
-        let mut rooms = self.inner.lock().await;
-        let mut users = self.users_room.lock().await;
+    pub async fn remove_room(&self, room: K) {
+        let mut rooms = self.inner.write().await;
 
         match rooms.entry(room.clone()) {
             std::collections::hash_map::Entry::Vacant(_) => {}
             std::collections::hash_map::Entry::Occupied(el) => {
-                for user in el.get().users().await.iter() {
-                    if let std::collections::hash_map::Entry::Occupied(mut user_task) =
-                        users.entry(user.into())
-                    {
-                        let vecotr = user_task.get_mut();
+                let room = el.remove();
 
-                        vecotr.retain(|task| {
-                            if task.room_name == room {
-                                task.task.abort();
-                            }
-
-                            task.room_name != room
-                        });
-                    }
-                }
-
-                el.remove();
+                room.clear_tasks().await;
             }
         }
     }
 
-    pub async fn leave_room(&self, name: String, user: String) -> Result<(), RoomError> {
-        let rooms = self.inner.lock().await;
-        let mut users = self.users_room.lock().await;
+    pub async fn leave_room(&self, name: K, user: U) -> Result<(), RoomError> {
+        let rooms = self.inner.read().await;
 
         rooms
             .get(&name)
@@ -345,53 +331,64 @@ where
             .leave(user.clone())
             .await;
 
-        match users.entry(user.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut o) => {
-                let vecotr = o.get_mut();
-
-                vecotr.retain(|task| {
-                    if task.room_name == name {
-                        task.task.abort();
-                    }
-
-                    task.room_name != name
-                });
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {}
-        }
-
         Ok(())
     }
 
-    pub async fn is_room_empty(&self, name: String) -> Result<bool, RoomError> {
-        let rooms = self.inner.lock().await;
+    pub async fn is_room_empty(&self, name: K) -> Result<bool, RoomError> {
+        let rooms = self.inner.read().await;
 
         Ok(rooms.get(&name).ok_or(RoomError::RoomNotFound)?.is_empty())
     }
 
     pub async fn rooms_count(&self) -> usize {
-        let rooms = self.inner.lock().await;
+        let rooms = self.inner.read().await;
 
         rooms.len()
     }
-
-    pub async fn get_user_receiver(
-        &self,
-        name: String,
-    ) -> Result<broadcast::Receiver<T>, RoomError> {
-        let rx = self.user_reciever.lock().await;
-
-        let rx = rx.get(&name).ok_or(RoomError::NotInitiated)?.subscribe();
-
-        Ok(rx)
-    }
 }
 
-impl<T> Default for RoomsManager<T>
+impl<K, U, T> Default for RoomsManager<K, U, T>
 where
     T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash + Clone,
+    U: Eq + std::hash::Hash + Clone,
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'a, K, U, T> std::ops::Deref for UserReceiverGuard<'a, K, U, T>
+where
+    T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash + Clone,
+    U: Eq + std::hash::Hash + Clone,
+{
+    type Target = broadcast::Receiver<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.receiver
+    }
+}
+
+impl<'a, K, U, T> std::ops::DerefMut for UserReceiverGuard<'a, K, U, T>
+where
+    T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash + Clone,
+    U: Eq + std::hash::Hash + Clone,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.receiver
+    }
+}
+
+impl<'a, K, U, T> Drop for UserReceiverGuard<'a, K, U, T>
+where
+    T: Clone + Send + 'static,
+    K: Eq + std::hash::Hash + Clone,
+    U: Eq + std::hash::Hash + Clone,
+{
+    fn drop(&mut self) {
+        self.manager.end_user(self.user.clone());
     }
 }
