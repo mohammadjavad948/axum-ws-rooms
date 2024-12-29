@@ -157,7 +157,7 @@ where
     pub async fn clear_tasks(&self) {
         let mut inner = self.inner_user.write().await;
 
-        inner.values().into_iter().for_each(|value| {
+        inner.values().for_each(|value| {
             value.task.abort();
         });
 
