@@ -11,3 +11,6 @@ keywords = ["axum", "axum-ws"]
 
 [dependencies]
 tokio = {version = "1.42.0", features = ["rt", "sync", "macros"]}
+
+[dev-dependencies]
+tokio = {version = "1.42.0", features = ["rt", "rt-multi-thread", "sync", "macros", "time"]}

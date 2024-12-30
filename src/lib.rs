@@ -10,32 +10,34 @@ use tokio::{
     task::JoinHandle,
 };
 
-/// each room has a name and id and it contains `broadcast::sender<String>` which can be accessed
+/// each room has a name and it contains `broadcast::sender<String>` which can be accessed
 /// by `get_sender` method and you can send message to a roome by calling `send` on room.
 /// each room counts how many user it has and there is a method to check if its empty
-/// if you want to join a room you can call `join` method and recieve a `broadcast::Sender<String>`
-/// which you can subscribe to it and listen for incoming messages.
-/// remember to leave the room after the user disconnects.
-pub struct Room<K, U, T> {
-    pub name: K,
+/// each room track its joined users and stores spawned tasks handlers
+struct Room<K, U, T> {
+    name: K,
     tx: broadcast::Sender<T>,
     inner_user: RwLock<HashMap<U, UserTask>>,
     user_count: AtomicU32,
 }
 
+/// struct that contains task handler that forwards messages
 struct UserTask {
     task: JoinHandle<()>,
 }
 
-/// this struct is used for managing multiple rooms at once
-/// ## how it works
-/// everything is managed by a mutex
-/// there is a hashmap of rooms
-/// a hashmap of user reciever
-/// and a hashmap of user task
-/// when a user joins a room a task will be created and all of that rooms
-/// message will be forwarded to user reciever
-/// and then user can listen to its own user reciever and recieve message from all joind rooms
+/// use in combination with `Arc` to share it between threads
+/// internally it uses `RwLock` so it can handle concurrent requests without a problem
+/// when a user connects to ws endpoint you have to call `init_user` and it gives you a guard that
+/// when dropped will remove user from all rooms
+/// # Generics
+/// `K` is type used to identify each room
+///
+/// `U` is type used to identify each user
+///
+/// `T` is message type that is sent between rooms and users
+/// # Examples
+/// examples are available in examples directory
 pub struct RoomsManager<K, U, T> {
     inner: RwLock<HashMap<K, Room<K, U, T>>>,
     user_reciever: RwLock<HashMap<U, broadcast::Sender<T>>>,
@@ -88,7 +90,7 @@ where
 {
     /// creates new room with a given name
     /// capacity is the underlying channel capacity and its default is 100
-    pub fn new(name: K, capacity: Option<usize>) -> Room<K, U, T> {
+    fn new(name: K, capacity: Option<usize>) -> Room<K, U, T> {
         let (tx, _rx) = broadcast::channel(capacity.unwrap_or(100));
 
         Room {
@@ -101,7 +103,7 @@ where
 
     /// join the rooms with a unique user
     /// if user has joined before, it does nothing
-    pub async fn join(&self, user: U, user_sender: broadcast::Sender<T>) {
+    async fn join(&self, user: U, user_sender: broadcast::Sender<T>) {
         let mut inner = self.inner_user.write().await;
 
         match inner.entry(user) {
@@ -139,7 +141,7 @@ where
         }
     }
 
-    pub fn blocking_leave(&self, user: U) {
+    fn blocking_leave(&self, user: U) {
         let mut inner = self.inner_user.blocking_write();
 
         match inner.entry(user) {
@@ -154,7 +156,7 @@ where
         }
     }
 
-    pub async fn clear_tasks(&self) {
+    async fn clear_tasks(&self) {
         let mut inner = self.inner_user.write().await;
 
         inner.values().for_each(|value| {
@@ -167,29 +169,29 @@ where
     }
 
     /// check if user is in the room
-    pub async fn contains_user(&self, user: &U) -> bool {
+    async fn contains_user(&self, user: &U) -> bool {
         let inner = self.inner_user.read().await;
 
         inner.contains_key(user)
     }
 
     /// checks if room is empty
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.user_count.load(Ordering::SeqCst) == 0
     }
 
     /// get sender without joining room
-    pub fn get_sender(&self) -> broadcast::Sender<T> {
+    fn get_sender(&self) -> broadcast::Sender<T> {
         self.tx.clone()
     }
 
     ///send message to room
-    pub fn send(&self, data: T) -> Result<usize, broadcast::error::SendError<T>> {
+    fn send(&self, data: T) -> Result<usize, broadcast::error::SendError<T>> {
         self.tx.send(data)
     }
 
     /// get user count of room
-    pub async fn user_count(&self) -> u32 {
+    async fn user_count(&self) -> u32 {
         self.user_count.load(Ordering::SeqCst)
     }
 }
